@@ -21,7 +21,6 @@ class Command(BaseCommand):
 
     help = "Import log file into DB."
     
-    data_buffer  = []    # Buffer for portion of data to be saved into DB
     data_reading = False # Data processing flag
 
     def add_arguments(self, parser):
@@ -53,6 +52,7 @@ class Command(BaseCommand):
             # Parsing log data
             self.stdout.write("Parsing log data from file '{}':".format(logfile))
             with logfile.open() as file:
+                
                 asyncio.run(self.__process_data(file, options['parse_size'] * 1048576))
 
         # Exceptions processing
@@ -62,17 +62,17 @@ class Command(BaseCommand):
     async def __process_data(self, file, max_data_size):
 
         # Reading first portion of data
-        self.data_buffer = await self.__read_data(file, max_data_size)
-        if not self.data_buffer:
+        data = await self.__read_data(file, max_data_size)
+        if not data:
             self.stdout.write("Nothing to process.")
             return
 
-        # Reading and saving data portion by portion in parallel
-        read_task = asyncio.create_task(self.__read_data(file, max_data_size))
-        save_task = asyncio.create_task(self.__save_data())
+        # Reading and saving data in parallel portion by portion 
         rec_count = 0
         self.data_reading = True
         while self.data_reading: # this loop terminates inside __read_data
+            save_task  = asyncio.create_task(self.__save_data(data))
+            read_task  = asyncio.create_task(self.__read_data(file, max_data_size))
             rec_count += await save_task
             new_data   = await read_task
             self.stdout.write("\r{} records parsed... ".format(rec_count), ending='')
@@ -80,7 +80,7 @@ class Command(BaseCommand):
             # need to read next data portion until success or EoF.
             while self.data_reading and not new_data:
                 new_data = await self.__read_data(file, max_data_size)
-            self.data_buffer = new_data
+            data = new_data
         self.stdout.write("done.")
 
     async def __read_data(self, file, max_data_size):
@@ -111,7 +111,7 @@ class Command(BaseCommand):
 
         # Parsing data
         try:
-            data = json.loads(data)
+            data = map(json.loads, data)
             data = map(request_split_in_dict, data)
             data = map(dict_to_NgnixLog, data)
         except Exception as ex:
@@ -123,6 +123,6 @@ class Command(BaseCommand):
 
         return list(data)
 
-    async def __save_data(self):
-        return
-
+    async def __save_data(self, data):
+        await NgnixLog.objects.abulk_create(data)
+        return len(data)
